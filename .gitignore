@@ -1,0 +1,28 @@
+# === 認証情報・秘密情報（絶対にコミットしない）===========================
+credentials.json
+credentials*.json
+*.json.json
+.env
+.env.*
+# Streamlit のローカル Secrets（本番は Cloud の Secrets 画面で設定する）
+.streamlit/secrets.toml
+
+# === Python ==============================================================
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+
+# === ログ・一時ファイル ===================================================
+*.log
+streamlit_run.log
+
+# === OS / エディタ / ツール ================================================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.claude/

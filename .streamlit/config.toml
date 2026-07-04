@@ -1,0 +1,7 @@
+[server]
+# 初回起動時のメールアドレス入力プロンプトを抑止する（非対話で起動できる）
+headless = true
+
+[browser]
+# 利用統計の送信をオフにする
+gatherUsageStats = false

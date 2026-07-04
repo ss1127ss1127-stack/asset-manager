@@ -1,0 +1,7 @@
+streamlit>=1.40
+gspread>=6.1
+google-auth>=2.35
+# pandas 3.x の新しい .pyd は Windows の Smart App Control に
+# ブロックされたため、実績のある 2.2.3 を固定する
+pandas==2.2.3
+plotly>=5.24
