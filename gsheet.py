@@ -27,18 +27,22 @@ def _load_credentials() -> Credentials:
     try-except で包み、見つからなければ 2) にフォールバックする。
     """
     # --- 1) Streamlit Community Cloud（st.secrets）------------------------
+    # secrets が「有るか」の判定だけを try で包む。
+    # secrets 未設定 / streamlit 文脈外 のときは例外になるのでローカルへ回す。
+    info = None
     try:
         import streamlit as st  # ローカルの CLI 実行でも import 自体は可能
 
         if "gcp_service_account" in st.secrets:
-            # AttrDict を通常の dict に変換してからクレデンシャル化する
+            # AttrDict を通常の dict に変換
             info = dict(st.secrets["gcp_service_account"])
-            return Credentials.from_service_account_info(
-                info, scopes=config.SCOPES
-            )
     except Exception:
-        # secrets が未設定 / streamlit 文脈外 の場合はローカルへフォールバック
-        pass
+        info = None
+
+    # secrets が存在した場合は、ここで失敗しても握りつぶさない。
+    # （private_key の改行崩れ等の本当の原因を「見つかりません」で隠さないため）
+    if info is not None:
+        return Credentials.from_service_account_info(info, scopes=config.SCOPES)
 
     # --- 2) ローカルの credentials.json ----------------------------------
     if config.CREDENTIALS_PATH.exists():
