@@ -212,6 +212,69 @@ def save_sim_state(state: dict, client: gspread.Client | None = None) -> None:
     ws.update_cell(1, 1, payload)
 
 
+def load_time_buckets(client: gspread.Client | None = None) -> list[dict]:
+    """『タイムバケツ』シートからアイテム一覧を読み込む（夫婦共有）。
+
+    戻り値の各要素: {"id", "title", "amount"(float), "bucket", "age"(int|None)}
+    シートが無い場合は空リスト。実行年齢が空欄なら age=None（＝年代の代表年齢）。
+    """
+    ss = get_spreadsheet(client)
+    try:
+        ws = ss.worksheet(config.TIME_BUCKET_SHEET)
+    except gspread.WorksheetNotFound:
+        return []
+
+    items: list[dict] = []
+    for rec in ws.get_all_records():
+        item_id = str(rec.get("ID", "")).strip()
+        if not item_id:
+            continue
+        bucket = str(rec.get("年代", "")).strip()
+        if bucket not in config.TIME_BUCKETS:
+            bucket = config.TIME_BUCKETS[0]
+        amount = float(_to_numeric_amount(pd.Series([rec.get("予定金額", 0)])).iloc[0])
+        raw_age = str(rec.get("実行年齢", "")).strip()
+        age = int(float(raw_age)) if raw_age not in ("", "nan", "None") else None
+        items.append({
+            "id": item_id,
+            "title": str(rec.get("タイトル", "")).strip(),
+            "amount": amount,
+            "bucket": bucket,
+            "age": age,
+        })
+    return items
+
+
+def save_time_buckets(
+    items: list[dict], client: gspread.Client | None = None
+) -> None:
+    """『タイムバケツ』シートをアイテム一覧で丸ごと上書きする。
+
+    件数は多くないため、毎回シートをクリアして全行を書き直す（行探索が不要で堅牢）。
+    """
+    ss = get_spreadsheet(client)
+    try:
+        ws = ss.worksheet(config.TIME_BUCKET_SHEET)
+    except gspread.WorksheetNotFound:
+        ws = ss.add_worksheet(
+            title=config.TIME_BUCKET_SHEET,
+            rows=max(len(items) + 10, 20),
+            cols=len(config.TIME_BUCKET_HEADER),
+        )
+
+    rows = [list(config.TIME_BUCKET_HEADER)]
+    for it in items:
+        rows.append([
+            str(it.get("id", "")),
+            str(it.get("title", "")),
+            it.get("amount", 0),
+            it.get("bucket", config.TIME_BUCKETS[0]),
+            "" if it.get("age") is None else it.get("age"),
+        ])
+    ws.clear()
+    ws.update(rows, value_input_option="USER_ENTERED")
+
+
 def _create_sim_settings_sheet(spreadsheet, defaults: dict[str, float]) -> None:
     """『シミュレーション設定』シートを作成し、デフォルト値を書き込む。"""
     ws = spreadsheet.add_worksheet(

@@ -70,6 +70,7 @@ EXPENSE_COLORS = {
     "教育費": "#E67E22",
     config.COL_HOME_MAINTENANCE: "#16A085",   # 持家修繕・家電買い換え（固定）
     config.COL_CHILD_INDEPENDENCE: "#8E44AD",  # 子ども大学卒業時支出
+    config.COL_SPECIAL_EXPENSE: "#2980B9",     # 特別支出（タイムバケツ由来）
     "カスタム支出": "#C0392B",
 }
 
@@ -86,7 +87,8 @@ def load_all():
     df = gsheet.load_database(client)
     settings = gsheet.load_sim_settings(client)
     state = gsheet.load_sim_state(client)  # 前回保存した入力値（無ければ {}）
-    return df, settings, state
+    buckets = gsheet.load_time_buckets(client)  # タイムバケツ（特別支出の元データ）
+    return df, settings, state, buckets
 
 
 def yen(value: float) -> str:
@@ -112,14 +114,17 @@ if _c_reset.button("↩️ 入力を初期化", width="stretch",
 
 persist_enabled = True
 try:
-    df, settings, saved = load_all()
+    df, settings, saved, buckets = load_all()
 except Exception as e:  # noqa: BLE001
     st.warning(
         "スプレッドシートに接続できませんでした。デフォルト値で続行します。\n\n"
         f"詳細: {getattr(e, '__cause__', '') or e}"
     )
-    df, settings, saved = pd.DataFrame(), config.default_sim_settings(), {}
+    df, settings, saved, buckets = pd.DataFrame(), config.default_sim_settings(), {}, []
     persist_enabled = False  # 保存先が無いので永続化は無効
+
+# タイムバケツ由来の特別支出（該当年齢の年に自動計上）
+special_events = lifeplan.special_events_from_buckets(buckets)
 
 
 def sv(key, default):
@@ -427,6 +432,7 @@ params = lifeplan.PlanParams(
     children=children,
     settings=settings,
     custom_events=custom_events,
+    special_events=special_events,
 )
 sim = lifeplan.simulate(params)
 events = lifeplan.milestones(params)
@@ -436,6 +442,13 @@ events = lifeplan.milestones(params)
 #  メイングラフ: 資産推移（折れ線）＋ 年間収支（積み上げ棒＋収入線）
 # ===========================================================================
 st.subheader("資産推移と年間収支")
+
+if special_events:
+    _sp_total = sum(e["amount"] for e in special_events)
+    st.caption(
+        f"🪣 「タイムバケツ」で配置した {len(special_events)} 件（計 {yen(_sp_total)}）を"
+        "「特別支出」として自動計上しています。編集はタイムバケツのページから。"
+    )
 
 fig = make_subplots(specs=[[{"secondary_y": True}]])
 
@@ -504,6 +517,7 @@ with st.expander("📋 キャッシュフロー詳細表", expanded=False):
         "西暦", "年齢", "給与", "年金", "児童手当", "退職金", "カスタム収入",
         "運用益", "基本生活費", "住居費", "養育費", "教育費", "カスタム支出",
         config.COL_HOME_MAINTENANCE, config.COL_CHILD_INDEPENDENCE,
+        config.COL_SPECIAL_EXPENSE,
         "年間収入", "年間支出", "期末資産残高",
     ]
     view = sim[cols].copy()

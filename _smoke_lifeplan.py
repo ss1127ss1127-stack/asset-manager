@@ -23,6 +23,12 @@ params = lifeplan.PlanParams(
     apply_child_allowance=True, apply_univ_free_multi=True,
     children=children, settings=s,
     custom_events=[{"label": "車買い替え", "age": 55, "kind": "支出", "amount": 3_000_000}],
+    special_events=lifeplan.special_events_from_buckets([
+        {"id": "a", "title": "ハワイ旅行", "amount": 1_000_000, "bucket": "40代", "age": None},
+        {"id": "b", "title": "書斎リフォーム", "amount": 2_000_000, "bucket": "50代", "age": 52},
+        {"id": "c", "title": "まだ未定", "amount": 500_000, "bucket": "未分類", "age": None},
+        {"id": "d", "title": "金額ゼロ", "amount": 0, "bucket": "60代", "age": None},
+    ]),
 )
 
 sim = lifeplan.simulate(params)
@@ -54,4 +60,15 @@ print("estimate base(手取り720万, リタイア60):",
       round(lifeplan.estimate_base_pension_monthly(7_200_000, 60)))
 print("estimate base(手取り600万, リタイア65):",
       round(lifeplan.estimate_base_pension_monthly(6_000_000, 65)))
+
+print("\n-- 特別支出（タイムバケツ連動: 40代→45歳, 50代→52歳指定, 未分類/0円は無視）--")
+hit = sim[sim[config.COL_SPECIAL_EXPENSE] > 0]
+print(hit[["西暦", "年齢", config.COL_SPECIAL_EXPENSE]].to_string(index=False))
+print("special_events_from_buckets:",
+      lifeplan.special_events_from_buckets([
+          {"id": "a", "title": "ハワイ旅行", "amount": 1_000_000, "bucket": "40代", "age": None},
+          {"id": "b", "title": "書斎リフォーム", "amount": 2_000_000, "bucket": "50代", "age": 52},
+          {"id": "c", "title": "まだ未定", "amount": 500_000, "bucket": "未分類", "age": None},
+          {"id": "d", "title": "金額ゼロ", "amount": 0, "bucket": "60代", "age": None},
+      ]))
 print("OK")

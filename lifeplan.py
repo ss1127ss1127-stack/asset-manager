@@ -73,6 +73,8 @@ class PlanParams:
     settings: dict[str, float] = field(default_factory=dict)
     # {'label': str, 'age': int, 'kind': '収入'|'支出', 'amount': float}
     custom_events: list[dict] = field(default_factory=list)
+    # タイムバケツ由来の特別支出 {'label': str, 'age': int, 'amount': float}
+    special_events: list[dict] = field(default_factory=list)
 
 
 # ===========================================================================
@@ -139,6 +141,34 @@ def pension_monthly_paid(base_monthly: float, start_age: int) -> float:
     return float(base_monthly) * pension_factor(int(start_age))
 
 
+def special_events_from_buckets(items: list[dict]) -> list[dict]:
+    """タイムバケツのアイテムを特別支出イベント {label, age, amount} に変換する。
+
+    - 「未分類」（ToDo置き場）は計上しない。
+    - 年代バケツはその年代の代表年齢（中央値）に割り当てる。
+    - アイテムに実行年齢（age）が個別指定されていればそれを優先する。
+    - 金額が0以下のアイテムは無視する。
+    """
+    events: list[dict] = []
+    for it in items:
+        bucket = it.get("bucket")
+        rep_age = config.BUCKET_REPRESENTATIVE_AGE.get(bucket)
+        if rep_age is None:
+            continue  # 未分類など、計上対象外の年代
+        age = it.get("age")
+        if age in (None, ""):
+            age = rep_age
+        amount = float(it.get("amount") or 0.0)
+        if amount <= 0:
+            continue
+        events.append({
+            "label": str(it.get("title") or "特別支出"),
+            "age": int(age),
+            "amount": amount,
+        })
+    return events
+
+
 def estimate_base_pension_monthly(annual_income: float, retire_age: int) -> float:
     """65歳時点のベース年金月額を簡易式で概算する。
 
@@ -161,7 +191,7 @@ def simulate(params: PlanParams) -> pd.DataFrame:
     戻り値の列:
         西暦, 年齢, 給与, 年金, 児童手当, 退職金, カスタム収入,
         運用益, 基本生活費, 住居費, 養育費, 教育費, カスタム支出,
-        持家修繕・家電買い換え, 子ども大学卒業時支出,
+        持家修繕・家電買い換え, 子ども大学卒業時支出, 特別支出,
         年間収入, 年間支出, 期末資産残高, _date
     """
     rows = []
@@ -251,11 +281,17 @@ def simulate(params: PlanParams) -> pd.DataFrame:
             for a in child_ages.values()
             if a == config.CHILD_INDEPENDENCE_AGE
         )
+        # 特別支出（タイムバケツ由来。該当年齢の年にまとめて計上）。
+        special = sum(
+            float(e["amount"])
+            for e in params.special_events
+            if int(e["age"]) == age
+        )
 
         total_income = salary + pension + allowance + severance + custom_income
         total_expense = (
             base_living + housing + childcare + education + custom_expense
-            + home_maint + child_independence
+            + home_maint + child_independence + special
         )
         balance = balance + gain + total_income - total_expense
 
@@ -276,6 +312,7 @@ def simulate(params: PlanParams) -> pd.DataFrame:
                 "カスタム支出": custom_expense,
                 config.COL_HOME_MAINTENANCE: home_maint,
                 config.COL_CHILD_INDEPENDENCE: child_independence,
+                config.COL_SPECIAL_EXPENSE: special,
                 "年間収入": total_income,
                 "年間支出": total_expense,
                 "期末資産残高": balance,
