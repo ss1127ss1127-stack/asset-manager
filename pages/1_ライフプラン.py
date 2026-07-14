@@ -86,9 +86,8 @@ def load_all():
     client = get_client()
     df = gsheet.load_database(client)
     settings = gsheet.load_sim_settings(client)
-    state = gsheet.load_sim_state(client)  # 前回保存した入力値（無ければ {}）
     buckets = gsheet.load_time_buckets(client)  # タイムバケツ（特別支出の元データ）
-    return df, settings, state, buckets
+    return df, settings, buckets
 
 
 def yen(value: float) -> str:
@@ -114,22 +113,37 @@ if _c_reset.button("↩️ 入力を初期化", width="stretch",
 
 persist_enabled = True
 try:
-    df, settings, saved, buckets = load_all()
+    df, settings, buckets = load_all()
 except Exception as e:  # noqa: BLE001
     st.warning(
         "スプレッドシートに接続できませんでした。デフォルト値で続行します。\n\n"
         f"詳細: {getattr(e, '__cause__', '') or e}"
     )
-    df, settings, saved, buckets = pd.DataFrame(), config.default_sim_settings(), {}, []
+    df, settings, buckets = pd.DataFrame(), config.default_sim_settings(), []
     persist_enabled = False  # 保存先が無いので永続化は無効
 
 # タイムバケツ由来の特別支出（該当年齢の年に自動計上）
 special_events = lifeplan.special_events_from_buckets(buckets)
 
+# --- 入力値の永続化: セッション初回だけシートから最新の保存値を読み込む ------
+# ウィジェットのキーはページ遷移で破棄されるため、遷移でも消えない通常の
+# session_state 辞書（lp_state）を「入力値の正」として保持する。
+# キャッシュを介さず読むので、他端末やリロード後も最新の保存値を取得できる。
+if "lp_state" not in st.session_state:
+    if persist_enabled:
+        try:
+            st.session_state["lp_state"] = gsheet.load_sim_state(get_client())
+        except Exception:  # noqa: BLE001
+            st.session_state["lp_state"] = {}
+            persist_enabled = False
+    else:
+        st.session_state["lp_state"] = {}
+lp_state = st.session_state["lp_state"]
+
 
 def sv(key, default):
     """保存済み入力値を取り出す（未保存ならデフォルト）。"""
-    val = saved.get(key, default)
+    val = lp_state.get(key, default)
     return val if val is not None else default
 
 totals = analytics.monthly_total(df)
@@ -394,16 +408,16 @@ current_state = {
     "custom_events": custom_events,
 }
 
-if persist_enabled:
-    # 起点は「シートから読み込んだ値」。以降は前回保存値と比較して差分時のみ書込。
-    st.session_state.setdefault("_last_saved_state", saved)
-    if current_state != st.session_state["_last_saved_state"]:
-        try:
-            gsheet.save_sim_state(current_state, get_client())
-            st.session_state["_last_saved_state"] = current_state
-            st.sidebar.caption("✅ 入力を保存しました。")
-        except Exception as e:  # noqa: BLE001
-            st.sidebar.caption(f"⚠️ 保存に失敗しました: {e}")
+if persist_enabled and current_state != lp_state:
+    # まず「入力値の正」(セッション内)を更新しておく。これでページ遷移や
+    # リロードでも維持される（シート保存が失敗しても当該セッションは保たれる）。
+    st.session_state["lp_state"] = current_state
+    lp_state = current_state
+    try:
+        gsheet.save_sim_state(current_state, get_client())
+        st.sidebar.caption("✅ 入力を保存しました。")
+    except Exception as e:  # noqa: BLE001
+        st.sidebar.caption(f"⚠️ 保存に失敗しました（この端末では保持されます）: {e}")
 
 
 # ===========================================================================
