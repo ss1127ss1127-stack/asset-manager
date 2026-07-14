@@ -68,6 +68,8 @@ EXPENSE_COLORS = {
     "住居費": "#34495E",
     "養育費": "#F1C40F",
     "教育費": "#E67E22",
+    config.COL_HOME_MAINTENANCE: "#16A085",   # 持家修繕・家電買い換え（固定）
+    config.COL_CHILD_INDEPENDENCE: "#8E44AD",  # 子ども大学卒業時支出
     "カスタム支出": "#C0392B",
 }
 
@@ -83,7 +85,8 @@ def load_all():
     client = get_client()
     df = gsheet.load_database(client)
     settings = gsheet.load_sim_settings(client)
-    return df, settings
+    state = gsheet.load_sim_state(client)  # 前回保存した入力値（無ければ {}）
+    return df, settings, state
 
 
 def yen(value: float) -> str:
@@ -93,18 +96,36 @@ def yen(value: float) -> str:
 # --- データ読み込み --------------------------------------------------------
 st.title("🌱 ライフプランシミュレーション")
 
-if st.sidebar.button("🔄 データを再読み込み", width="stretch"):
+_c_reload, _c_reset = st.sidebar.columns(2)
+if _c_reload.button("🔄 再読み込み", width="stretch"):
     load_all.clear()
     st.rerun()
+if _c_reset.button("↩️ 入力を初期化", width="stretch",
+                   help="保存済みの入力値を消去し、既定値に戻します。"):
+    try:
+        gsheet.save_sim_state({}, get_client())
+    except Exception:  # noqa: BLE001
+        pass
+    load_all.clear()
+    st.session_state.clear()
+    st.rerun()
 
+persist_enabled = True
 try:
-    df, settings = load_all()
+    df, settings, saved = load_all()
 except Exception as e:  # noqa: BLE001
     st.warning(
         "スプレッドシートに接続できませんでした。デフォルト値で続行します。\n\n"
         f"詳細: {getattr(e, '__cause__', '') or e}"
     )
-    df, settings = pd.DataFrame(), config.default_sim_settings()
+    df, settings, saved = pd.DataFrame(), config.default_sim_settings(), {}
+    persist_enabled = False  # 保存先が無いので永続化は無効
+
+
+def sv(key, default):
+    """保存済み入力値を取り出す（未保存ならデフォルト）。"""
+    val = saved.get(key, default)
+    return val if val is not None else default
 
 totals = analytics.monthly_total(df)
 valid_totals = totals.dropna(subset=["_date"]) if not totals.empty else totals
@@ -122,77 +143,121 @@ else:
 # ===========================================================================
 st.sidebar.title("⚙️ シミュレーション条件")
 
+if persist_enabled:
+    st.sidebar.caption("💾 変更した入力値は自動保存され、次回起動時に復元されます。")
+
 st.sidebar.subheader("👤 基本設定")
 start_asset = float(st.sidebar.number_input(
     "現在の資産残高（初期資産）", min_value=0,
-    value=int(default_asset), step=100_000, format="%d",
+    value=int(sv("start_asset", int(default_asset))), step=100_000, format="%d",
     help="資産管理ダッシュボードの最新月の総資産を初期値に参照しています。",
 ))
 st.sidebar.caption(f"↑ ダッシュボード最新月の総資産: **{yen(default_asset)}**")
 start_year = int(st.sidebar.number_input(
     "起点の西暦", min_value=2000, max_value=2100,
-    value=default_start_year, step=1,
+    value=int(sv("start_year", default_start_year)), step=1,
 ))
 current_age = int(st.sidebar.number_input(
     "本人の現在年齢", min_value=0, max_value=90,
-    value=config.age_on(config.BIRTHDATE_SELF), step=1,
+    value=int(sv("current_age", config.age_on(config.BIRTHDATE_SELF))), step=1,
     help=f"生年月日 {config.BIRTHDATE_SELF:%Y-%m-%d} から自動計算した満年齢を初期値にしています。",
 ))
 retire_age = st.sidebar.slider(
     "リタイア年齢", min_value=40, max_value=75,
-    value=config.DEFAULT_RETIRE_AGE, step=1, format="%d 歳",
+    value=int(sv("retire_age", config.DEFAULT_RETIRE_AGE)), step=1, format="%d 歳",
+    key="retire_age",
 )
 pension_start_age = st.sidebar.slider(
     "年金受給開始年齢", min_value=60, max_value=75,
-    value=config.DEFAULT_PENSION_START_AGE, step=1, format="%d 歳",
-    help="リタイア〜受給開始までの「年金空白期間」は取り崩しになります。",
+    value=int(sv("pension_start_age", config.DEFAULT_PENSION_START_AGE)),
+    step=1, format="%d 歳", key="pension_start_age",
+    help="65歳を基準に、繰り下げ(+0.7%/月)・繰り上げ(−0.4%/月)で年金額が自動増減します。",
 )
 
 st.sidebar.subheader("📈 運用利回り")
-rate_before = st.sidebar.slider(
+rate_before_pct = st.sidebar.slider(
     "リタイア前の運用利回り", min_value=0.0, max_value=10.0,
-    value=config.DEFAULT_RATE_BEFORE * 100, step=0.5, format="%.1f%%",
-) / 100.0
-rate_after = st.sidebar.slider(
+    value=float(sv("rate_before_pct", config.DEFAULT_RATE_BEFORE * 100)),
+    step=0.5, format="%.1f%%",
+)
+rate_before = rate_before_pct / 100.0
+rate_after_pct = st.sidebar.slider(
     "リタイア後の運用利回り", min_value=0.0, max_value=10.0,
-    value=config.DEFAULT_RATE_AFTER * 100, step=0.5, format="%.1f%%",
-) / 100.0
+    value=float(sv("rate_after_pct", config.DEFAULT_RATE_AFTER * 100)),
+    step=0.5, format="%.1f%%",
+)
+rate_after = rate_after_pct / 100.0
 
 st.sidebar.subheader("💴 収入")
 annual_income = float(st.sidebar.number_input(
     "現役時代の年間手取り収入", min_value=0,
-    value=config.DEFAULT_ANNUAL_INCOME, step=100_000,
+    value=int(sv("annual_income", config.DEFAULT_ANNUAL_INCOME)), step=100_000,
+    key="annual_income",
 ))
-pension_monthly = float(st.sidebar.number_input(
-    "年金（月額・受給開始後）", min_value=0,
-    value=config.DEFAULT_PENSION_MONTHLY, step=10_000,
-))
+
+# --- 年金（65歳ベース月額 ＋ 概算ボタン ＋ 受給開始年齢連動）--------------
+# ベース月額は session_state で管理し、「概算する」ボタンから上書きできるようにする。
+st.session_state.setdefault(
+    "pension_base_monthly",
+    int(sv("pension_base_monthly", config.DEFAULT_PENSION_MONTHLY)),
+)
+
+
+def _estimate_pension_base():
+    """簡易式で65歳ベース月額を概算し、入力欄へ反映する。"""
+    inc = float(st.session_state.get("annual_income", config.DEFAULT_ANNUAL_INCOME))
+    rage = int(st.session_state.get("retire_age", config.DEFAULT_RETIRE_AGE))
+    st.session_state["pension_base_monthly"] = int(round(
+        lifeplan.estimate_base_pension_monthly(inc, rage)
+    ))
+
+
+st.sidebar.number_input(
+    "年金（65歳時点の月額・ベース）", min_value=0, step=10_000,
+    key="pension_base_monthly",
+    help="65歳受給開始を基準(±0%)とした月額。受給開始年齢に応じて実受給額は自動増減します。",
+)
+st.sidebar.button(
+    "🧮 年金額を概算する", width="stretch", on_click=_estimate_pension_base,
+    help="基礎年金（夫婦2人分13万円/月）＋ 厚生年金（報酬比例）の簡易式でベース月額を自動セット。",
+)
+pension_base_monthly = float(st.session_state["pension_base_monthly"])
+# 選択中の受給開始年齢での実受給額をプレビュー表示。
+_factor = lifeplan.pension_factor(int(pension_start_age))
+_paid = lifeplan.pension_monthly_paid(pension_base_monthly, int(pension_start_age))
+st.sidebar.caption(
+    f"→ {int(pension_start_age)}歳開始の実受給額: **{yen(_paid)}/月**"
+    f"（65歳比 {(_factor - 1) * 100:+.1f}%）"
+)
+
 c_sev1, c_sev2 = st.sidebar.columns(2)
 severance_age = int(c_sev1.number_input(
     "退職金 受取年齢", min_value=40, max_value=75,
-    value=config.DEFAULT_SEVERANCE_AGE, step=1,
+    value=int(sv("severance_age", config.DEFAULT_SEVERANCE_AGE)), step=1,
 ))
 severance_amount = float(c_sev2.number_input(
     "退職金額", min_value=0,
-    value=config.DEFAULT_SEVERANCE_AMOUNT, step=100_000,
+    value=int(sv("severance_amount", config.DEFAULT_SEVERANCE_AMOUNT)), step=100_000,
 ))
 
 st.sidebar.subheader("🏠 住居費（住宅ローン）")
 housing_current = float(st.sidebar.number_input(
     "現在の月々支払額", min_value=0,
-    value=config.DEFAULT_HOUSING_CURRENT_MONTHLY, step=1_000,
+    value=int(sv("housing_current", config.DEFAULT_HOUSING_CURRENT_MONTHLY)), step=1_000,
 ))
 housing_revised = float(st.sidebar.number_input(
     "金利見直し後の月々支払額", min_value=0,
-    value=config.DEFAULT_HOUSING_REVISED_MONTHLY, step=1_000,
+    value=int(sv("housing_revised", config.DEFAULT_HOUSING_REVISED_MONTHLY)), step=1_000,
 ))
 housing_revise_age = int(st.sidebar.number_input(
     "金利見直しが適用される年齢", min_value=current_age, max_value=100,
-    value=max(config.DEFAULT_HOUSING_REVISE_AGE, current_age), step=1,
+    value=max(int(sv("housing_revise_age", config.DEFAULT_HOUSING_REVISE_AGE)), current_age),
+    step=1,
 ))
 housing_end_age = int(st.sidebar.number_input(
     "ローン支払い終了年齢", min_value=current_age, max_value=100,
-    value=max(config.DEFAULT_HOUSING_END_AGE, current_age), step=1,
+    value=max(int(sv("housing_end_age", config.DEFAULT_HOUSING_END_AGE)), current_age),
+    step=1,
     help="この年齢以降は住居費0円。",
 ))
 
@@ -201,51 +266,73 @@ st.sidebar.caption("夫婦の食費・光熱費等のベース。子どもの養
 default_living = int(settings.get("平均生活費（月額）", config.DEFAULT_LIVING_COST_MONTHLY))
 base_living = float(st.sidebar.slider(
     "基本生活費（月額・現役）", min_value=100_000, max_value=800_000,
-    value=default_living, step=10_000, format="¥%d",
+    value=int(sv("base_living", default_living)), step=10_000, format="¥%d",
 ))
 retire_living = float(st.sidebar.slider(
     "基本生活費（月額・リタイア後）", min_value=50_000, max_value=800_000,
-    value=config.DEFAULT_RETIRE_LIVING_COST_MONTHLY, step=10_000, format="¥%d",
+    value=int(sv("retire_living", config.DEFAULT_RETIRE_LIVING_COST_MONTHLY)),
+    step=10_000, format="¥%d",
 ))
 
 st.sidebar.subheader("🎓 子どもの教育費")
+st.sidebar.caption(
+    f"各子が{config.CHILD_INDEPENDENCE_AGE}歳になる年に"
+    f"「{config.COL_CHILD_INDEPENDENCE}」として"
+    f"{config.CHILD_INDEPENDENCE_AMOUNT:,.0f}円が自動計上されます。"
+)
+saved_children = {c.get("name"): c for c in sv("children", []) if isinstance(c, dict)}
 children: list[lifeplan.Child] = []
 for name in config.CHILDREN:
     with st.sidebar.expander(name, expanded=(name == config.CHILDREN[0])):
         birth = config.CHILD_BIRTHDATES[name]
+        saved_child = saved_children.get(name, {})
+        saved_choices = saved_child.get("choices", {}) if isinstance(saved_child, dict) else {}
         age = st.number_input(
             f"{name}の現在年齢", min_value=0, max_value=30,
-            value=config.age_on(birth), step=1,
+            value=int(saved_child.get("age", config.age_on(birth))), step=1,
             key=f"age_{name}",
             help=f"生年月日 {birth:%Y-%m-%d} から自動計算しています。",
         )
-        choices = {
-            stage: st.selectbox(
+        choices = {}
+        for stage in config.EDUCATION_STAGES:
+            default_choice = saved_choices.get(stage, config.DEFAULT_SCHOOL_CHOICE[stage])
+            if default_choice not in config.SCHOOL_TYPES:
+                default_choice = config.DEFAULT_SCHOOL_CHOICE[stage]
+            choices[stage] = st.selectbox(
                 stage, config.SCHOOL_TYPES,
-                index=config.SCHOOL_TYPES.index(config.DEFAULT_SCHOOL_CHOICE[stage]),
+                index=config.SCHOOL_TYPES.index(default_choice),
                 key=f"{name}_{stage}",
             )
-            for stage in config.EDUCATION_STAGES
-        }
         children.append(lifeplan.Child(name=name, current_age=int(age), choices=choices))
 
 st.sidebar.subheader("👨‍👩‍👧‍👦 多子世帯支援")
 apply_child_allowance = st.sidebar.checkbox(
-    "児童手当を反映（第3子以降は増額）", value=config.DEFAULT_APPLY_CHILD_ALLOWANCE,
+    "児童手当を反映（第3子以降は増額）",
+    value=bool(sv("apply_child_allowance", config.DEFAULT_APPLY_CHILD_ALLOWANCE)),
     help="0〜18歳に支給。第3子以降は月3万円。",
 )
 apply_univ_free_multi = st.sidebar.checkbox(
-    "多子世帯の大学無償化を適用", value=config.DEFAULT_APPLY_UNIV_FREE_MULTI,
+    "多子世帯の大学無償化を適用",
+    value=bool(sv("apply_univ_free_multi", config.DEFAULT_APPLY_UNIV_FREE_MULTI)),
     help=f"扶養する子が{config.MULTI_CHILD_THRESHOLD}人以上いる年は、大学生の授業料を免除扱いにします。",
 )
 
 st.sidebar.subheader("🎉 カスタム・ライフイベント")
-st.sidebar.caption("車の買い替え・リフォーム等。「＋」で行を追加できます。")
+st.sidebar.caption(
+    "車の買い替え・リフォーム等。「＋」で行を追加できます。"
+    f"（持家修繕・家電は{config.HOME_MAINTENANCE_START_AGE}歳から"
+    f"{config.HOME_MAINTENANCE_INTERVAL}年ごとに自動計上されます）"
+)
+_saved_events = sv("custom_events", [])
 default_events = pd.DataFrame({
-    "ラベル": pd.Series([], dtype="string"),
-    "年齢": pd.Series([], dtype="Int64"),
-    "区分": pd.Series([], dtype="string"),
-    "金額": pd.Series([], dtype="Int64"),
+    "ラベル": pd.Series(
+        [e.get("label", "") for e in _saved_events], dtype="string"),
+    "年齢": pd.Series(
+        [e.get("age") for e in _saved_events], dtype="Int64"),
+    "区分": pd.Series(
+        [e.get("kind", "支出") for e in _saved_events], dtype="string"),
+    "金額": pd.Series(
+        [e.get("amount") for e in _saved_events], dtype="Int64"),
 })
 edited_events = st.sidebar.data_editor(
     default_events,
@@ -273,6 +360,48 @@ for _, r in edited_events.iterrows():
 
 
 # ===========================================================================
+#  入力値の永続化（変更があればスプレッドシートへ自動保存）
+# ===========================================================================
+current_state = {
+    "start_asset": int(start_asset),
+    "start_year": int(start_year),
+    "current_age": int(current_age),
+    "retire_age": int(retire_age),
+    "pension_start_age": int(pension_start_age),
+    "rate_before_pct": float(rate_before_pct),
+    "rate_after_pct": float(rate_after_pct),
+    "annual_income": int(annual_income),
+    "pension_base_monthly": int(pension_base_monthly),
+    "severance_age": int(severance_age),
+    "severance_amount": int(severance_amount),
+    "housing_current": int(housing_current),
+    "housing_revised": int(housing_revised),
+    "housing_revise_age": int(housing_revise_age),
+    "housing_end_age": int(housing_end_age),
+    "base_living": int(base_living),
+    "retire_living": int(retire_living),
+    "apply_child_allowance": bool(apply_child_allowance),
+    "apply_univ_free_multi": bool(apply_univ_free_multi),
+    "children": [
+        {"name": c.name, "age": c.current_age, "choices": c.choices}
+        for c in children
+    ],
+    "custom_events": custom_events,
+}
+
+if persist_enabled:
+    # 起点は「シートから読み込んだ値」。以降は前回保存値と比較して差分時のみ書込。
+    st.session_state.setdefault("_last_saved_state", saved)
+    if current_state != st.session_state["_last_saved_state"]:
+        try:
+            gsheet.save_sim_state(current_state, get_client())
+            st.session_state["_last_saved_state"] = current_state
+            st.sidebar.caption("✅ 入力を保存しました。")
+        except Exception as e:  # noqa: BLE001
+            st.sidebar.caption(f"⚠️ 保存に失敗しました: {e}")
+
+
+# ===========================================================================
 #  シミュレーション実行
 # ===========================================================================
 params = lifeplan.PlanParams(
@@ -282,7 +411,7 @@ params = lifeplan.PlanParams(
     retire_age=int(retire_age),
     pension_start_age=int(pension_start_age),
     annual_income=annual_income,
-    pension_monthly=pension_monthly,
+    pension_monthly=pension_base_monthly,
     severance_age=severance_age,
     severance_amount=severance_amount,
     rate_before=rate_before,
@@ -374,6 +503,7 @@ with st.expander("📋 キャッシュフロー詳細表", expanded=False):
     cols = [
         "西暦", "年齢", "給与", "年金", "児童手当", "退職金", "カスタム収入",
         "運用益", "基本生活費", "住居費", "養育費", "教育費", "カスタム支出",
+        config.COL_HOME_MAINTENANCE, config.COL_CHILD_INDEPENDENCE,
         "年間収入", "年間支出", "期末資産残高",
     ]
     view = sim[cols].copy()

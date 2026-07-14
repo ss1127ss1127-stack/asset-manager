@@ -44,6 +44,8 @@ class PlanParams:
 
     # 収入
     annual_income: float = config.DEFAULT_ANNUAL_INCOME
+    # pension_monthly は「65歳受給開始を基準とした月額」。実際の受給額は
+    # pension_start_age に応じて pension_factor で自動増減する。
     pension_monthly: float = config.DEFAULT_PENSION_MONTHLY
     severance_age: int = config.DEFAULT_SEVERANCE_AGE
     severance_amount: float = config.DEFAULT_SEVERANCE_AMOUNT
@@ -117,6 +119,40 @@ def child_allowance_for_age(age: int, birth_order: int) -> float:
 
 
 # ===========================================================================
+#  年金（受給開始年齢に連動した自動計算）
+# ===========================================================================
+def pension_factor(start_age: int) -> float:
+    """受給開始年齢に応じた年金額の増減係数（65歳開始で 1.0）。
+
+    - 66〜75歳（繰り下げ）: 1ヶ月遅らせるごとに +0.7%（70歳開始で +42%）
+    - 60〜64歳（繰り上げ）: 1ヶ月早めるごとに −0.4%（60歳開始で −24%）
+    """
+    if start_age >= config.PENSION_BASE_AGE:
+        months = (int(start_age) - config.PENSION_BASE_AGE) * 12
+        return 1.0 + config.PENSION_DEFER_RATE_PER_MONTH * months
+    months = (config.PENSION_BASE_AGE - int(start_age)) * 12
+    return max(0.0, 1.0 - config.PENSION_EARLY_RATE_PER_MONTH * months)
+
+
+def pension_monthly_paid(base_monthly: float, start_age: int) -> float:
+    """実際に受給する年金月額（＝65歳ベース月額 × 受給開始年齢の増減係数）。"""
+    return float(base_monthly) * pension_factor(int(start_age))
+
+
+def estimate_base_pension_monthly(annual_income: float, retire_age: int) -> float:
+    """65歳時点のベース年金月額を簡易式で概算する。
+
+    基礎年金（夫婦2人分・一律） + 厚生年金（報酬比例部分）:
+        厚生年金 = (年間手取り ÷ 0.8) ÷ 12 × (5.481/1000) × (リタイア年齢 − 22)
+    """
+    basic = float(config.PENSION_BASIC_MONTHLY_COUPLE)
+    work_years = max(0, int(retire_age) - config.PENSION_WORK_START_AGE)
+    gross_monthly = (float(annual_income) / config.PENSION_TAKEHOME_TO_GROSS) / 12.0
+    kosei = gross_monthly * config.PENSION_KOSEI_COEFF * work_years
+    return basic + kosei
+
+
+# ===========================================================================
 #  年次シミュレーション
 # ===========================================================================
 def simulate(params: PlanParams) -> pd.DataFrame:
@@ -125,6 +161,7 @@ def simulate(params: PlanParams) -> pd.DataFrame:
     戻り値の列:
         西暦, 年齢, 給与, 年金, 児童手当, 退職金, カスタム収入,
         運用益, 基本生活費, 住居費, 養育費, 教育費, カスタム支出,
+        持家修繕・家電買い換え, 子ども大学卒業時支出,
         年間収入, 年間支出, 期末資産残高, _date
     """
     rows = []
@@ -133,6 +170,11 @@ def simulate(params: PlanParams) -> pd.DataFrame:
 
     # 児童手当の第○子は、リストの並び（長男→次男→三男）を出生順とみなす。
     birth_order = {id(c): i + 1 for i, c in enumerate(params.children)}
+
+    # 年金の実受給月額は受給開始年齢で決まる（毎年一定）ため、ループ外で1度だけ算出。
+    paid_pension_monthly = pension_monthly_paid(
+        params.pension_monthly, params.pension_start_age
+    )
 
     for i in range(n_years + 1):
         year = params.start_year + i
@@ -146,7 +188,7 @@ def simulate(params: PlanParams) -> pd.DataFrame:
         # --- 収入 -------------------------------------------------------
         salary = float(params.annual_income) if working else 0.0
         pension = (
-            float(params.pension_monthly) * 12.0
+            paid_pension_monthly * 12.0
             if age >= params.pension_start_age
             else 0.0
         )
@@ -194,8 +236,27 @@ def simulate(params: PlanParams) -> pd.DataFrame:
             if int(e["age"]) == age and e["kind"] == "支出"
         )
 
+        # --- 定例支出（自動計上）--------------------------------------
+        # 持家修繕・家電買い換え: 本人が35歳の年から10年ごとに固定計上。
+        home_maint = (
+            float(config.HOME_MAINTENANCE_AMOUNT)
+            if age >= config.HOME_MAINTENANCE_START_AGE
+            and (age - config.HOME_MAINTENANCE_START_AGE)
+            % config.HOME_MAINTENANCE_INTERVAL == 0
+            else 0.0
+        )
+        # 子ども大学卒業時支出: 各子が22歳になる年に100万円（人数分）。
+        child_independence = sum(
+            float(config.CHILD_INDEPENDENCE_AMOUNT)
+            for a in child_ages.values()
+            if a == config.CHILD_INDEPENDENCE_AGE
+        )
+
         total_income = salary + pension + allowance + severance + custom_income
-        total_expense = base_living + housing + childcare + education + custom_expense
+        total_expense = (
+            base_living + housing + childcare + education + custom_expense
+            + home_maint + child_independence
+        )
         balance = balance + gain + total_income - total_expense
 
         rows.append(
@@ -213,6 +274,8 @@ def simulate(params: PlanParams) -> pd.DataFrame:
                 "養育費": childcare,
                 "教育費": education,
                 "カスタム支出": custom_expense,
+                config.COL_HOME_MAINTENANCE: home_maint,
+                config.COL_CHILD_INDEPENDENCE: child_independence,
                 "年間収入": total_income,
                 "年間支出": total_expense,
                 "期末資産残高": balance,

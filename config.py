@@ -74,6 +74,11 @@ SIM_SETTINGS_SHEET = "シミュレーション設定"
 SIM_KEY_COL = "項目"
 SIM_VALUE_COL = "値"
 
+# ユーザーがサイドバーで調整した入力値一式を保存する専用シート。
+# セル A1 に状態を JSON 文字列で丸ごと保持し、起動時に初期値として読み込む。
+SIM_STATE_SHEET = "ライフプラン入力"
+SIM_STATE_CELL = "A1"
+
 # --- 生活費 ---------------------------------------------------------------
 # 「基本生活費」（夫婦の食費・光熱費等のベース）月額の初期値。
 # 子どもの養育費は別途 CHILDCARE_BRACKETS で自動加算する。
@@ -83,12 +88,40 @@ DEFAULT_RETIRE_LIVING_COST_MONTHLY = 250_000   # リタイア後
 RETIRE_LIVING_RATIO = 0.7
 
 # --- 収入 -----------------------------------------------------------------
-# 世帯の年間手取り収入（現役時代）と、年金（月額）の初期値。
+# 世帯の年間手取り収入（現役時代）と、年金の初期値。
+# DEFAULT_PENSION_MONTHLY は「65歳受給開始を基準（±0%）とした月額」。
+# 実際の受給額は受給開始年齢に応じて自動増減する（PENSION_* / lifeplan.pension_factor）。
 DEFAULT_ANNUAL_INCOME = 6_000_000  # 手取り 600万円/年
-DEFAULT_PENSION_MONTHLY = 200_000
+DEFAULT_PENSION_MONTHLY = 200_000  # 65歳時点のベース月額
 # 退職金（一時収入）
 DEFAULT_SEVERANCE_AGE = 50
 DEFAULT_SEVERANCE_AMOUNT = 0
+
+# --- 年金（受給開始年齢による自動増減）------------------------------------
+# 65歳時点の受給額をベース（±0%）とし、開始を早める/遅らせると増減する。
+PENSION_BASE_AGE = 65                    # 増減の基準年齢（この年齢開始で係数1.0）
+PENSION_DEFER_RATE_PER_MONTH = 0.007     # 繰り下げ: 1ヶ月ごとに +0.7%（70歳で+42%）
+PENSION_EARLY_RATE_PER_MONTH = 0.004     # 繰り上げ: 1ヶ月ごとに -0.4%（60歳で-24%）
+
+# 「年金額を概算する」ボタンの簡易式パラメータ。
+PENSION_BASIC_MONTHLY_COUPLE = 130_000   # 基礎年金（夫婦2人分）月額・一律
+PENSION_KOSEI_COEFF = 5.481 / 1000       # 厚生年金の乗率（報酬比例部分）
+PENSION_TAKEHOME_TO_GROSS = 0.8          # 手取り→額面の逆算係数（手取り = 額面×0.8 と仮定）
+PENSION_WORK_START_AGE = 22              # 就労開始年齢（加入期間 = リタイア年齢 − この値）
+
+# --- 定例支出: 持家修繕・家電買い換え（固定計上）--------------------------
+# 夫（本人）が HOME_MAINTENANCE_START_AGE 歳の年から
+# HOME_MAINTENANCE_INTERVAL 年ごとに HOME_MAINTENANCE_AMOUNT を年間支出へ上乗せ。
+HOME_MAINTENANCE_START_AGE = 35
+HOME_MAINTENANCE_INTERVAL = 10
+HOME_MAINTENANCE_AMOUNT = 1_500_000
+COL_HOME_MAINTENANCE = "持家修繕・家電買い換え"
+
+# --- 定例支出: 子どもの大学卒業（独立）時支出 ------------------------------
+# 各子どもが CHILD_INDEPENDENCE_AGE 歳になる年に CHILD_INDEPENDENCE_AMOUNT を計上。
+CHILD_INDEPENDENCE_AGE = 22
+CHILD_INDEPENDENCE_AMOUNT = 1_000_000
+COL_CHILD_INDEPENDENCE = "子ども大学卒業時支出"
 
 # --- 運用利回り（リタイア前後で切替）--------------------------------------
 DEFAULT_RATE_BEFORE = 0.05  # リタイア前 年利5%

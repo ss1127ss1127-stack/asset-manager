@@ -38,4 +38,20 @@ print("lifespan:", lifeplan.asset_lifespan(sim))
 print("milestones:", lifeplan.milestones(params))
 print("childcare 0/6/7/13/16/23:",
       [lifeplan.childcare_cost_for_age(a) for a in (0, 6, 7, 13, 16, 23)])
+
+print("\n-- 定例支出: 持家修繕・家電（35,45,55,65歳）--")
+print(sim[sim["年齢"].isin([34, 35, 45, 55, 65])]
+      [["年齢", config.COL_HOME_MAINTENANCE]].to_string(index=False))
+
+print("\n-- 定例支出: 子ども大学卒業時支出（各子22歳の年に計上）--")
+hit = sim[sim[config.COL_CHILD_INDEPENDENCE] > 0]
+print(hit[["西暦", "年齢", config.COL_CHILD_INDEPENDENCE]].to_string(index=False))
+
+print("\n-- 年金 受給開始年齢の増減係数 --")
+for a in (60, 62, 65, 70, 75):
+    print(f"  {a}歳開始: 係数 {lifeplan.pension_factor(a):.3f}")
+print("estimate base(手取り720万, リタイア60):",
+      round(lifeplan.estimate_base_pension_monthly(7_200_000, 60)))
+print("estimate base(手取り600万, リタイア65):",
+      round(lifeplan.estimate_base_pension_monthly(6_000_000, 65)))
 print("OK")
